@@ -28,6 +28,9 @@ parse_fn <- function(.html){
     str_replace_all("\\s+", " ")
 }
 
+
+
+
 # function to apply to claims data
 parse_data <- function(.df){
   out <- .df %>%
