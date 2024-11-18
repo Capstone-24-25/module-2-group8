@@ -27,8 +27,9 @@ source(paste(url, 'projection-functions.R', sep = ''))
 ```
 
 Q1.1
+???compare with headers and without headers
 ```{r}
-# function to parse html and clean text
+# function to parse html and clean text (with headers)
 parse_fn <- function(.html){
   read_html(.html) %>%
     html_elements('p, h1, h2, h3, h4, h5, h6') %>%
@@ -185,7 +186,17 @@ pred_df %>% panel(truth = bclass,
                   event_level = 'second')
 ```
 
-
+Q1.2
+secondary tokenization
+```{r}
+claims_clean_tokens2 <- claims_clean %>%
+  unnest_tokens(output = bigram,
+                input = text_clean,
+                token = 'ngrams',
+                n =2,
+                stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]'))
+```
 
 
 
