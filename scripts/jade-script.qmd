@@ -127,7 +127,7 @@ bi_nlp_fn <- function(parse_data.out){
                   n = 2,
                   stopwords = str_remove_all(stop_words$word, 
                                              '[[:punct:]]')) %>%
-    mutate(token.lem = lemmatize_words(token)) %>%
+    mutate(token.lem = lemmatize_strings(token)) %>%
     filter(str_length(token.lem) > 2) %>%
     count(.id, bclass, token.lem, name = 'n') %>%
     bind_tf_idf(term = token.lem, 
@@ -159,8 +159,8 @@ join_clean_claims_bigrams <- inner_join(clean_claims_bigrams, all_preds)
 ```
 
 ```{r}
-join_clean_claims_bigrams |> 
-  select(log_odds_pred) |> head()
+join_clean_claims_bigrams |>  head()
+clean_claims_bigrams %>% head()
 ```
 
 
@@ -213,5 +213,6 @@ save(join_clean_claims_bigrams, file = here::here("data/join_clean_claims_bigram
 load(here::here("data/clean_claims_bigrams.rda"))
 load(here::here("data/clean_claims_tokens.rda"))
 load(here::here("results/header_logistic_tokens_fit.rda"))
+load(here::here("data/join_clean_claims_bigrams.rda"))
 ```
 
