@@ -154,14 +154,21 @@ all_preds <- all_preds |>
   mutate(log_odds_pred = log(`.pred_N/A: No relevant content.`  / `.pred_Relevant claim content` + .01)) |> 
   select(.id, log_odds_pred)
 
-clean_claims_bigrams <- full_join(clean_claims_bigrams, all_preds)
+join_clean_claims_bigrams <- inner_join(clean_claims_bigrams, all_preds)
+
 ```
+
+```{r}
+join_clean_claims_bigrams |> 
+  select(log_odds_pred) |> head()
+```
+
 
 ## Splits, Recipe, and Model Specification
 
 ```{r}
 set.seed(1027)
-bi_partitions <- clean_claims_bigrams %>% initial_split(prop = 0.8)
+bi_partitions <- join_clean_claims_bigrams %>% initial_split(prop = 0.8)
 
 bi_claim_train <- training(bi_partitions)
 bi_claim_test <- testing(bi_partitions)
@@ -199,6 +206,7 @@ autoplot(type = "heatmap")
 save(clean_claims_bigrams, file = here::here("data/clean_claims_bigrams.rda"))
 save(clean_claims_tokens, file = here::here("data/clean_claims_tokens.rda"))
 save(logistic_fit, file = here::here("results/header_logistic_tokens_fit.rda"))
+save(join_clean_claims_bigrams, file = here::here("data/join_clean_claims_bigrams.rda"))
 ```
 
 ```{r}
