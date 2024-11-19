@@ -189,6 +189,10 @@ pred_df %>% panel(truth = bclass,
 Q1.2
 secondary tokenization
 ```{r}
+stpwrd <- stop_words %>%
+  pull(word) %>%
+  str_remove_all('[[:punct:]]')
+
 claims_clean_tokens2 <- claims_clean %>%
   unnest_tokens(output = bigram,
                 input = text_clean,
@@ -198,8 +202,48 @@ claims_clean_tokens2 <- claims_clean %>%
                                              '[[:punct:]]'))
 ```
 
+```{r}
+bigram_data_clean <- claims_clean_tokens2 %>%
+  filter(str_count(bigram, " ") == 1)
 
+bigram_dtm <- bigram_data_clean %>%
+  count(.id, bigram, name = "n") %>%
+  bind_tf_idf(term = bigram, document = .id, n = n) %>%
+  pivot_wider(id_cols = .id, names_from = bigram, values_from = tf_idf, values_fill = 0)
+```
 
+PCA on the bigram term-document matrix
+```{r}
+bigram_dtm_matrix <- as.matrix(bigram_dtm %>% select(-.id))
+#pca_out <- prcomp(bigram_dtm_matrix, center = TRUE, scale. = TRUE)
+```
+??????????????????????
+```{r}
+# Check the proportion of variance explained by each principal component
+summary(pca_out)
+
+# Choose the top N principal components (e.g., 10 PCs)
+n_components <- 10
+bigram_pcs <- pca_out$x[, 1:n_components]
+```
+
+get predicted log-odds rations from first model
+```{r}
+pred_log_odds <- predict(fit, type = "link") # "link" gives the log-odds
+pred_log_odds
+```
+
+Combine Log-Odds Ratios and Principal Components
+```{r}
+# Combine predicted log-odds ratios with the bigram principal components
+combined_data <- cbind(pred_log_odds, bigram_pcs)
+```
+
+```{r}
+# Convert to a data frame for regression modeling
+combined_df <- as.data.frame(combined_data)
+combined_df$bclass <- train_labels$bclass # Add the binary class labels
+```
 
 
 
