@@ -245,7 +245,48 @@ combined_df <- as.data.frame(combined_data)
 combined_df$bclass <- train_labels$bclass # Add the binary class labels
 ```
 
+Fit the Second Logistic Regression Model
+```{r}
+# Fit logistic regression on combined data (log-odds + bigram PCs)
+fit_second <- glm(bclass ~ ., data = combined_df, family = binomial())
 
+# View the summary of the second model
+summary(fit_second)
+```
 
+```{r}
+# Project test data onto PCs for bigrams
+test_bigrams <- testing(partitions) %>%
+  unnest_tokens(output = bigram,
+                input = text_clean,
+                token = 'ngrams',
+                n = 2,
+                stopwords = stpwrd) %>%
+  count(.id, bigram, name = "n") %>%
+  bind_tf_idf(term = bigram, document = .id, n = n) %>%
+  pivot_wider(id_cols = .id, names_from = bigram, values_from = tf_idf, values_fill = 0)
+
+# Perform PCA on test bigram data
+test_bigrams_matrix <- as.matrix(test_bigrams %>% select(-.id))
+test_pca_out <- predict(pca_out, newdata = test_bigrams_matrix)
+
+# Combine predicted log-odds with test principal components
+test_combined_data <- cbind(predict(fit, testing(partitions), type = "link"), test_pca_out)
+
+# Make predictions using the second logistic regression model
+preds_second <- predict(fit_second, newdata = test_combined_data, type = "response")
+
+# Store predictions in a data frame with true labels
+test_pred_df <- test_labels %>%
+  transmute(bclass = factor(bclass)) %>%
+  bind_cols(pred = as.numeric(preds_second)) %>%
+  mutate(bclass.pred = factor(pred > 0.5, labels = levels(bclass)))
+
+# Define classification metric panel 
+panel <- metric_set(sensitivity, specificity, accuracy, roc_auc)
+
+# Compute test set accuracy for the second model
+test_pred_df %>% panel(truth = bclass, estimate = bclass.pred, pred, event_level = 'second')
+```
 
 
