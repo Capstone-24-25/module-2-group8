@@ -99,6 +99,7 @@ save(claims_clean, file = here::here("data/clean1.RData"))
 
 # Splits and Folds
 ```{r}
+load(here::here("data/clean1.RData"))
 set.seed(3435)
 
 bc_split <- initial_split(claims_clean_tokens, prop = 0.8, strata = bclass)
@@ -147,8 +148,103 @@ enet_tune_res <- tune_grid(
 save(enet_tune_res, file = here::here("results/enet_tune_res.rda"))
 ```
 
+```{r}
+load(here::here("results/enet_tune_res.rda"))
+autoplot(enet_tune_res)
+show_best(enet_tune_res, metric = "roc_auc")
+final_log_wkflow <- finalize_workflow(enet_wkflow, show_best(enet_tune_res, metric = "roc_auc")[1,c("penalty", "mixture")])
+final_log_fit <- fit(final_log_wkflow, data = claim_train)
+```
 
-Model 
+```{r}
+test_preds <- augment(final_log_fit, new_data = claim_test)
+roc_auc(test_preds, truth = bclass, `.pred_N/A: No relevant content.`)
+```
+
+
+# Bigrams
+
+```{r}
+bi_nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'ngrams',
+                  n = 2,
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_strings(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+```
+
+```{r}
+claims_clean_tokens_bi <- bi_nlp_fn(claims_clean)
+
+all_preds <- augment(final_log_fit, claims_clean_tokens)
+
+all_preds <- all_preds |> 
+  mutate(log_odds_pred = log(`.pred_N/A: No relevant content.`  / `.pred_Relevant claim content` + .01)) |> 
+  select(.id, log_odds_pred)
+
+full_clean_claims_bigrams <- inner_join(claims_clean_tokens_bi, all_preds)
+save(full_clean_claims_bigrams, file = here::here("data/full_clean_claims_bigrams.rda"))
+```
+
+
+```{r}
+load(here::here("data/full_clean_claims_bigrams.rda"))
+
+set.seed(1027)
+bi_partitions <- full_clean_claims_bigrams %>% initial_split(prop = 0.8, strata = bclass)
+
+bi_claim_train <- training(bi_partitions)
+bi_claim_test <- testing(bi_partitions)
+bi_claim_test %>% select(log_odds_pred) %>% head()
+set.seed(3435)
+
+bi_bc_folds <- vfold_cv(bi_claim_train, v=5, strata = bclass)
+
+bi_claim_recipe <- recipe(bclass ~ ., data = bi_claim_train) |> 
+  step_rm(.id) |> 
+  step_pca(all_numeric(), threshold = .7)
+
+enet_mod <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+    set_mode("classification") %>% 
+    set_engine("glmnet")
+
+bi_logistic_wkflow <- workflow() %>% 
+    add_model(enet_mod) %>% 
+    add_recipe(bi_claim_recipe)
+
+enet_grid <- grid_regular(penalty(range = c(0,.5), trans = identity_trans()),
+                          mixture(range = c(0,.5)), levels = 10)
+```
+
+```{r}
+bi_enet_tune_res <- tune_grid(
+  object = bi_logistic_wkflow, 
+  resamples = bi_bc_folds, 
+  grid = enet_grid,
+  control = control_grid(verbose=TRUE)
+    )
+
+save(bi_enet_tune_res, file = here::here("results/bi_enet_tune_res.rda"))
+```
+
+
+# Primary Task
+Support Vector
+
 
 ```{r}
 svm_rbf_spec <- svm_rbf(cost = tune()) %>%
