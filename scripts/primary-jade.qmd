@@ -1,0 +1,253 @@
+---
+title: "Summary of exploratory tasks"
+author: "Jade O'Brien"
+date: today
+---
+
+```{r}
+library(tidyverse)
+require(tidytext)
+require(textstem)
+require(rvest)
+require(qdapRegex)
+require(stopwords)
+require(tokenizers)
+require(tidyverse)
+require(keras)
+require(tensorflow)
+
+library(dplyr)
+library(tidymodels)
+library(modelr)
+library(Matrix)
+library(sparsesvd)
+library(glmnet)
+library(word2vec)
+library(tm)
+```
+
+```{r}
+# path to activity files on repo
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/activities/data/'
+
+# load a few functions for the activity
+source(paste(url, 'projection-functions.R', sep = ''))
+
+load(here::here("data/claims-raw.RData"))
+```
+
+Q1.1
+???compare with headers and without headers
+```{r}
+# function to parse html and clean text (with headers)
+parse_fn <- function(.html){
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+
+# function to apply to claims data
+parse_data <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+
+#clean data set
+claims_clean <- parse_data(claims_raw)
+claims_clean_tokens <- nlp_fn(claims_clean)
+save(claims_clean, file = here::here("data/clean1.RData"))
+```
+
+
+# Splits and Folds
+```{r}
+set.seed(3435)
+
+bc_split <- initial_split(claims_clean_tokens, prop = 0.8, strata = bclass)
+
+claim_train <- training(bc_split)
+claim_test <- testing(bc_split)
+set.seed(3435)
+
+bc_folds <- vfold_cv(claim_train, v=5, strata = bclass)
+```
+
+Recipe
+
+```{r}
+claim_recipe <- recipe(bclass ~ ., data = claim_train) %>% 
+  step_rm(.id) %>% 
+  step_pca(all_numeric_predictors(), threshold = 0.7) |> 
+  step_normalize(all_numeric_predictors())
+```
+
+
+Regularized Linear Model
+
+```{r}
+enet_mod <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+    set_mode("classification") %>% 
+    set_engine("glmnet")
+
+enet_wkflow <- workflow() %>% 
+    add_model(enet_mod) %>% 
+    add_recipe(claim_recipe)
+
+enet_grid <- grid_regular(penalty(range = c(0,.5), trans = identity_trans()),
+                          mixture(range = c(0,.5)), levels = 10)
+```
+
+```{r}
+    # Elastic Net 
+enet_tune_res <- tune_grid(
+  object = enet_wkflow, 
+  resamples = bc_folds, 
+  grid = enet_grid,
+  control = control_grid(verbose=TRUE)
+    )
+
+save(enet_tune_res, file = here::here("results/enet_tune_res.rda"))
+```
+
+
+Model 
+
+```{r}
+svm_rbf_spec <- svm_rbf(cost = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+svm_linear_spec <- svm_linear(engine = "kernlab",
+  mode = "classification",
+  cost = tune())
+
+svm_rbf_wkflow <- workflow() %>% 
+    add_recipe(claim_recipe) %>% 
+    add_model(svm_rbf_spec)
+
+svm_linear_wkflow <- workflow() %>% 
+    add_recipe(claim_recipe) %>% 
+    add_model(svm_linear_spec)
+
+svm_grid <- grid_regular(cost(), levels = 5)
+```
+
+```{r}
+svm_rbf_res <- tune_grid(svm_rbf_wkflow, 
+                         resamples = bc_folds, 
+                         grid = svm_grid, 
+                         control=control_grid(verbose=TRUE))
+
+save(svm_rbf_res, file = here::here("results/svm_rbf_res.rda"))
+
+```
+
+```{r}
+autoplot(svm_rbf_res)
+```
+
+
+```{r}
+svm_linear_res <- tune_grid(svm_linear_wkflow, 
+                         resamples = bc_folds, 
+                         grid = svm_grid, 
+                         control=control_grid(verbose=TRUE))
+
+
+```
+
+
+Word Embeddings
+```{r}
+load(here::here("data/clean1.RData"))
+corpus <- Corpus(VectorSource(claims_clean$text_clean))
+corpus <- tm_map(corpus, removeWords, stopwords("SMART"))
+corpus <- tm_map(corpus, stripWhitespace)
+
+dtm <- DocumentTermMatrix(corpus)
+dtm_matrix <- as.matrix(dtm)
+
+```
+
+
+```{r}
+set.seed(3435)
+
+cbow_model <- word2vec(x = claims_clean$text_clean, type = "cbow", 
+                      hs = FALSE, dim = 50, iter = 10,
+                      sample = 0.3)
+
+# getting the list of possible words from our corpus from earlier
+word_list <- colnames(dtm_matrix)
+
+cbow_embedding <- as.matrix(cbow_model)
+cbow_embedding <- predict(cbow_model, word_list, type = "embedding")
+cbow_embedding <- na.omit(cbow_embedding)
+
+tokenizer_train <- text_tokenizer() %>% fit_text_tokenizer(claims_clean$text_clean)
+
+sequences_train <- texts_to_sequences(tokenizer_train, claims_clean$text_clean)
+
+max_length <- 150
+
+input_text <- pad_sequences(sequences_train, maxlen = max_length)
+```
+
+```{r}
+word2vecdim <- 32
+
+num_tokens <- length(unique(tokenizer_train$word_index))
+
+model_word2vec <- keras_model_sequential() %>% 
+  # Specify the maximum input length (150) and input_dim (unique tokens+1) and choose 32 dimensions
+  layer_embedding(input_dim = num_tokens+1, 
+                  output_dim = word2vecdim, 
+                  input_length = max_length,
+                  mask_zero = TRUE,   
+                  weights = list(cbow_embedding), # add weights from our previously trained embedding model
+                  trainable = FALSE
+                 ) %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 40, activation = "relu", kernel_initializer = "he_normal", bias_initializer = "zeros", kernel_regularizer = regularizer_l2(0.05)) %>% layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 20, activation = "relu", kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_dense(units = 1, activation = "sigmoid") 
+```
+
