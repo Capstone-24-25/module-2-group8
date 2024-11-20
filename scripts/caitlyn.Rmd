@@ -1,0 +1,430 @@
+
+```{r}
+library(tidyverse)
+require(tidytext)
+require(textstem)
+require(rvest)
+require(qdapRegex)
+require(stopwords)
+require(tokenizers)
+require(tidyverse)
+require(keras)
+require(tensorflow)
+library(knitr)
+library(dplyr)
+library(tidymodels)
+library(modelr)
+library(Matrix)
+library(sparsesvd)
+library(glmnet)
+library(keras)
+library(keras3)
+```
+
+```{r}
+load("~/pstat 197a/module-2-group8/data/claims-raw.RData")
+```
+
+```{r}
+# path to activity files on repo
+url <- 'https://raw.githubusercontent.com/pstat197/pstat197a/main/materials/activities/data/'
+
+# load a few functions for the activity
+source(paste(url, 'projection-functions.R', sep = ''))
+```
+
+```{r}
+# function to parse html and clean text (with headers)
+parse_fn <- function(.html){
+  read_html(.html) %>%
+    html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+    html_text2() %>%
+    str_c(collapse = ' ') %>%
+    rm_url() %>%
+    rm_email() %>%
+    str_remove_all('\'') %>%
+    str_replace_all(paste(c('\n', 
+                            '[[:punct:]]', 
+                            'nbsp', 
+                            '[[:digit:]]', 
+                            '[[:symbol:]]'),
+                          collapse = '|'), ' ') %>%
+    str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+    tolower() %>%
+    str_replace_all("\\s+", " ")
+}
+
+
+# function to apply to claims data
+parse_data <- function(.df){
+  out <- .df %>%
+    filter(str_detect(text_tmp, '<!')) %>%
+    rowwise() %>%
+    mutate(text_clean = parse_fn(text_tmp)) %>%
+    unnest(text_clean) 
+  return(out)
+}
+
+nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+
+#clean data set
+claims_clean <- parse_data(claims_raw)
+claims_clean_tokens <- nlp_fn(claims_clean)
+```
+
+```{r}
+head(claims_clean_tokens)
+head(claims_clean)
+```
+
+# binary classification
+
+```{r}
+# partition
+set.seed(102722)
+partitions <- claims_clean %>%
+  initial_split(prop = 0.8)
+
+train_dtm <- training(partitions) %>%
+  unnest_tokens(output = 'token', 
+                input = text_clean) %>%
+  group_by(.id, bclass) %>%
+  count(token) %>%
+  bind_tf_idf(term = token, 
+              document = .id, 
+              n = n) %>%
+  pivot_wider(id_cols = c(.id, bclass), 
+              names_from = token, 
+              values_from = tf_idf,
+              values_fill = 0) %>%
+  ungroup()
+```
+
+```{r}
+# extract first ten features
+x_train <- train_dtm %>%
+  ungroup() %>%
+  select(-.id, -bclass) %>%
+  select(1:10) %>%
+  as.matrix()
+
+# maybe can omit lines 123-127?
+
+# extract labels and coerce to binary
+y_train <- train_dtm %>% 
+  pull(bclass) %>%
+  factor() %>%
+  as.numeric() - 1
+```
+
+```{r}
+# specify model type
+#install.packages("keras3")
+#library(keras3)
+model <- keras_model_sequential(input_shape = 10)
+
+summary(model)
+```
+
+```{r}
+# add output layer
+model <- model %>% layer_dense(1) 
+
+summary(model)
+
+```
+
+```{r}
+model <- model %>% 
+  layer_activation(activation = 'sigmoid')
+
+model %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_sgd(),
+  metrics = 'binary_accuracy'
+)
+
+history <- model %>%
+  fit(x = x_train, 
+      y = y_train,
+      epochs = 10)
+
+# retrieve weights
+get_weights(model)
+
+# evaluate on specified data
+evaluate(model, x_train, y_train)
+
+# compute predictions
+model(x_train) %>% head()
+```
+
+
+```{r}
+# single layer network
+# store full DTM as a matrix
+x_train <- train_dtm %>%
+  select(-bclass, -.id) %>%
+  as.matrix()
+
+model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
+  layer_dense(10) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+summary(model)
+```
+
+```{r}
+# configure model
+model %>%
+  compile(
+    loss = 'binary_crossentropy',
+    optimizer = optimizer_sgd(),
+    metrics = 'binary_accuracy'
+  )
+
+# train
+history <- model %>%
+  fit(x = x_train,
+      y = y_train,
+      epochs = 50)
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+# change the optimizer
+model %>%
+  compile(
+    loss = 'binary_crossentropy',
+    optimizer = 'adam',
+    metrics = 'binary_accuracy'
+  )
+
+# re-train
+history <- model %>%
+  fit(x = x_train,
+      y = y_train,
+      epochs = 10)
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+# redefine model
+model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
+  layer_dense(10) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+model %>%
+  compile(
+    loss = 'binary_crossentropy',
+    optimizer = 'adam',
+    metrics = 'binary_accuracy'
+  )
+
+# train with validation split
+history <- model %>%
+  fit(x = x_train,
+      y = y_train,
+      epochs = 20,
+      validation_split = 0.2)
+
+```
+
+```{r}
+plot(history)
+```
+
+# multi-class setting
+
+```{r}
+# partition
+set.seed(102722)
+partitions <- claims_clean %>%
+  initial_split(prop = 0.8)
+
+train_dtm <- training(partitions) %>%
+  unnest_tokens(output = 'token', 
+                input = text_clean) %>%
+  group_by(.id, mclass) %>%
+  count(token) %>%
+  bind_tf_idf(term = token, 
+              document = .id, 
+              n = n) %>%
+  pivot_wider(id_cols = c(.id, mclass), 
+              names_from = token, 
+              values_from = tf_idf,
+              values_fill = 0) %>%
+  ungroup()
+```
+
+```{r}
+# extract first ten features
+x_train <- train_dtm %>%
+  ungroup() %>%
+  select(-.id, -mclass) %>%
+  select(1:10) %>%
+  as.matrix()
+
+# extract labels and coerce to binary
+y_train <- train_dtm %>% 
+  pull(mclass) %>%
+  factor() %>%
+  as.numeric() - 1
+```
+
+```{r}
+# specify model type
+#install.packages("keras3")
+#library(keras3)
+model <- keras_model_sequential(input_shape = 10)
+
+summary(model)
+```
+
+
+```{r}
+# add output layer
+model <- model %>% layer_dense(1) 
+
+summary(model)
+
+model <- model %>% 
+  layer_activation(activation = 'sigmoid')
+
+model %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_sgd(),
+  metrics = 'binary_accuracy'
+)
+
+history <- model %>%
+  fit(x = x_train, 
+      y = y_train,
+      epochs = 10)
+
+# retrieve weights
+get_weights(model)
+
+# evaluate on specified data
+evaluate(model, x_train, y_train)
+
+# compute predictions
+model(x_train) %>% head()
+```
+
+maybe use weights, eval, and pred from lines 311 for last part of question
+
+```{r}
+# single layer network
+# store full DTM as a matrix
+x_train <- train_dtm %>%
+  select(-mclass, -.id) %>%
+  as.matrix()
+
+model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
+  layer_dense(10) %>%
+  layer_dense(1) %>%
+  layer_activation(activation = 'sigmoid')
+
+summary(model)
+```
+
+maybe use x_train from lines 346-348
+
+```{r}
+# configure model
+model %>%
+  compile(
+    loss = 'binary_crossentropy',
+    optimizer = optimizer_sgd(),
+    metrics = 'binary_accuracy'
+  )
+
+# train
+history <- model %>%
+  fit(x = x_train,
+      y = y_train,
+      epochs = 50)
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+# change the optimizer
+model %>%
+  compile(
+    loss = 'binary_crossentropy',
+    optimizer = 'adam',
+    metrics = 'binary_accuracy'
+  )
+
+# re-train
+history <- model %>%
+  fit(x = x_train,
+      y = y_train,
+      epochs = 10)
+```
+
+```{r}
+plot(history)
+```
+
+```{r}
+# redefine model
+model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
+  layer_dense(64) %>% # more is better
+  layer_dense(5) %>% # 5 classes
+  layer_activation(activation = 'softmax') # for 5 probabilites
+
+model %>%
+  compile(
+    loss = 'sparse_categorical_crossentropy',
+    optimizer = 'adam',
+    metrics = 'sparse_categorical_accuracy'
+  )
+
+# sparse_categorical_crossentropy is for multi-model
+
+# train with validation split
+history <- model %>%
+  fit(x = x_train,
+      y = y_train,
+      epochs = 8,
+      validation_split = 0.2)
+```
+
+```{r}
+plot(history)
+```
+
+
+
+
