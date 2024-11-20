@@ -24,6 +24,7 @@ library(sparsesvd)
 library(glmnet)
 library(word2vec)
 library(tm)
+library(kernlab)
 ```
 
 ```{r}
@@ -260,6 +261,112 @@ bi_preds <- augment(bi_final_log_fit, new_data = bi_claim_test)
 roc_auc(bi_preds, truth = bclass, `.pred_N/A: No relevant content.`)
 heatmap(bi_preds, truth = bclass, `.pred_N/A: No relevant content.`)
 ```
+
+
+# Muticlass
+
+```{r}
+load(here::here("data/clean1.RData"))
+load(here::here("data/clean_claims_tokens.rda"))
+
+mclass_labels <- claims_clean %>% select(.id, mclass)
+
+tokenized_mclass <- inner_join(clean_claims_tokens, mclass_labels)
+```
+
+
+```{r}
+set.seed(3435)
+
+bc_split <- initial_split(tokenized_mclass, prop = 0.8)
+
+claim_train <- training(bc_split)
+claim_test <- testing(bc_split)
+set.seed(3435)
+```
+
+Recipe
+
+```{r}
+m_claim_recipe <- recipe(mclass ~ ., data = claim_train) %>% 
+  step_rm(.id) %>% 
+  step_rm(bclass) %>% 
+  step_nzv() %>% 
+  step_pca(all_numeric_predictors(), threshold = 0.7) |> 
+  step_normalize(all_numeric_predictors())
+```
+
+
+```{r}
+enet_mod <- multinom_reg(penalty = 0, mixture = 0) %>% 
+    set_mode("classification") %>% 
+    set_engine("nnet")
+
+enet_wkflow <- workflow() %>% 
+    add_model(enet_mod) %>% 
+    add_recipe(m_claim_recipe)
+
+m_final_log_fit <- fit(enet_wkflow, data = claim_train)
+
+save(m_final_log_fit, file = here::here("results/m_final_log_fit.rda"))
+```
+
+
+```{r}
+load(here::here("data/clean_claims_bigrams.rda"))
+preds <- augment(m_final_log_fit, new_data = tokenized_mclass)
+preds <- preds %>% select(.id, `.pred_Potentially unlawful activity`, `.pred_Possible Fatality`, `.pred_Physical Activity`, `.pred_N/A: No relevant content.`)
+
+full_clean_claims_bigrams <- inner_join(clean_claims_bigrams, preds)
+full_clean_claims_bigrams <- inner_join(full_clean_claims_bigrams, mclass_labels)
+```
+
+```{r}
+set.seed(1027)
+bi_partitions <- full_clean_claims_bigrams %>% initial_split(prop = 0.8)
+
+bi_claim_train <- training(bi_partitions)
+bi_claim_test <- testing(bi_partitions)
+set.seed(3435)
+
+bi_bc_folds <- vfold_cv(bi_claim_train, v=5)
+
+m_bi_claim_recipe <- recipe(mclass ~ ., data = bi_claim_train) |> 
+  step_rm(.id) |> 
+  step_rm(bclass) %>% 
+  step_nzv(all_predictors()) |>
+  step_pca(all_numeric_predictors(), -c(`.pred_Potentially unlawful activity`, `.pred_Possible Fatality`, `.pred_Physical Activity`, `.pred_N/A: No relevant content.`), num_comp = 50) %>% 
+  step_normalize(all_numeric_predictors())
+
+enet_mod <- multinom_reg(penalty = tune()) %>% 
+    set_mode("classification") %>% 
+    set_engine("nnet")
+
+m_bi_logistic_wkflow <- workflow() %>% 
+    add_model(enet_mod) %>% 
+    add_recipe(m_bi_claim_recipe)
+
+enet_grid <- grid_regular(penalty(range = c(0,.5), trans = identity_trans()),
+                          levels = 10)
+```
+
+```{r}
+m_bi_enet_tune_res <- tune_grid(
+  object = m_bi_logistic_wkflow, 
+  resamples = bi_bc_folds, 
+  grid = enet_grid,
+  control = control_grid(verbose=TRUE)
+    )
+save(m_bi_enet_tune_res, file = here::here("results/m_bi_enet_tune_res.rda"))
+```
+
+```{r}
+m_bi_final_log_wkflow <- finalize_workflow(m_bi_logistic_wkflow, show_best(m_bi_enet_tune_res)[1,c("penalty")])
+m_bi_final_log_fit <- fit(m_bi_final_log_wkflow, data = bi_claim_train)
+save(m_bi_final_log_fit, file = here::here("results/m_bi_final_log_fit.rda"))
+```
+
+
 # Primary Task
 Support Vector
 
@@ -349,6 +456,7 @@ save(full_clean_claims_trigrams, file = here::here("data/full_clean_claims_trigr
 ## Binary Modeling Pipeline
 
 ```{r}
+load(here::here("data/full_clean_claims_trigrams.rda"))
 set.seed(1027)
 tri_partitions <- full_clean_claims_trigrams %>% initial_split(prop = 0.8, strata = bclass)
 
@@ -372,7 +480,7 @@ svm_spec <- svm_linear(cost = tune()) %>%
     set_engine("kernlab")
 
 tri_svm_linear_wkflow <- workflow() %>% 
-    add_recipe(claim_recipe) %>% 
+    add_recipe(tri_claim_recipe) %>% 
     add_model(svm_spec)
 
 
@@ -384,6 +492,11 @@ tri_svm_linear_res <- tune_grid(tri_svm_linear_wkflow,
                          resamples = tri_bc_folds, 
                          grid = svm_grid, 
                          control=control_grid(verbose=TRUE))
+
 save(tri_svm_linear_res, file = here::here("results/tri_svm_linear_res.rda"))
+```
+
+```{r}
+autoplot(tri_svm_linear_res)
 ```
 
