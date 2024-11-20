@@ -154,6 +154,7 @@ autoplot(enet_tune_res)
 show_best(enet_tune_res, metric = "roc_auc")
 final_log_wkflow <- finalize_workflow(enet_wkflow, show_best(enet_tune_res, metric = "roc_auc")[1,c("penalty", "mixture")])
 final_log_fit <- fit(final_log_wkflow, data = claim_train)
+save(final_log_fit, file = here::here("results/final_log_fit.rda"))
 ```
 
 ```{r}
@@ -216,7 +217,8 @@ bi_bc_folds <- vfold_cv(bi_claim_train, v=5, strata = bclass)
 
 bi_claim_recipe <- recipe(bclass ~ ., data = bi_claim_train) |> 
   step_rm(.id) |> 
-  step_pca(all_numeric(), threshold = .7)
+  step_nzv(all_predictors()) |>
+  step_pca(all_numeric_predictors(), -log_odds_pred, num_comp = 50)
 
 enet_mod <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
     set_mode("classification") %>% 
@@ -242,26 +244,35 @@ save(bi_enet_tune_res, file = here::here("results/bi_enet_tune_res.rda"))
 ```
 
 
+```{r}
+autoplot(bi_enet_tune_res)
+show_best(bi_enet_tune_res, metric = "roc_auc")
+bi_final_log_wkflow <- finalize_workflow(bi_logistic_wkflow, show_best(bi_enet_tune_res, metric = "roc_auc")[1,c("penalty", "mixture")])
+bi_final_log_fit <- fit(bi_final_log_wkflow, data = bi_claim_train)
+```
+
+```{r}
+save(bi_final_log_fit, file = here::here("results/bi_final_log_fit.rda"))
+```
+
+```{r}
+bi_preds <- augment(bi_final_log_fit, new_data = bi_claim_test)
+roc_auc(bi_preds, truth = bclass, `.pred_N/A: No relevant content.`)
+heatmap(bi_preds, truth = bclass, `.pred_N/A: No relevant content.`)
+```
 # Primary Task
 Support Vector
 
 
 ```{r}
-svm_rbf_spec <- svm_rbf(cost = tune()) %>%
-  set_mode("classification") %>%
-  set_engine("kernlab")
-
-svm_linear_spec <- svm_linear(engine = "kernlab",
-  mode = "classification",
-  cost = tune())
+svm_rbf_spec <- svm_rbf(cost = tune()) %>% 
+    set_mode("classification") %>% 
+    set_engine("kernlab")
 
 svm_rbf_wkflow <- workflow() %>% 
     add_recipe(claim_recipe) %>% 
     add_model(svm_rbf_spec)
 
-svm_linear_wkflow <- workflow() %>% 
-    add_recipe(claim_recipe) %>% 
-    add_model(svm_linear_spec)
 
 svm_grid <- grid_regular(cost(), levels = 5)
 ```
@@ -280,70 +291,99 @@ save(svm_rbf_res, file = here::here("results/svm_rbf_res.rda"))
 autoplot(svm_rbf_res)
 ```
 
+## Using trigrams
 
 ```{r}
-svm_linear_res <- tune_grid(svm_linear_wkflow, 
-                         resamples = bc_folds, 
-                         grid = svm_grid, 
-                         control=control_grid(verbose=TRUE))
+tri_nlp_fn <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'ngrams',
+                  n = 3,
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_strings(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, bclass, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c('.id', 'bclass'),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
 
-
+claims_clean_tokens_tri <- tri_nlp_fn(claims_clean)
 ```
 
-
-Word Embeddings
 ```{r}
-load(here::here("data/clean1.RData"))
-corpus <- Corpus(VectorSource(claims_clean$text_clean))
-corpus <- tm_map(corpus, removeWords, stopwords("SMART"))
-corpus <- tm_map(corpus, stripWhitespace)
+load(here::here("data/full_clean_claims_bigrams.rda"))
+load(here::here("results/bi_final_log_fit.rda"))
+load(here::here("results/final_log_fit.rda"))
 
-dtm <- DocumentTermMatrix(corpus)
-dtm_matrix <- as.matrix(dtm)
+all_preds <- augment(final_log_fit, claims_clean_tokens)
 
+all_preds <- all_preds |> 
+  mutate(log_odds_pred = log(`.pred_N/A: No relevant content.`  / `.pred_Relevant claim content` + .01)) |> 
+  select(.id, log_odds_pred)
+
+full_clean_claims_tri <- inner_join(claims_clean_tokens_tri, all_preds)
+
+all_preds_bi <- augment(bi_final_log_fit, full_clean_claims_bigrams)
+
+all_preds_bi <- all_preds_bi |> 
+  mutate(log_odds_pred_bi = log(`.pred_N/A: No relevant content.`  / `.pred_Relevant claim content` + .01)) |> 
+  select(.id, log_odds_pred_bi)
+
+full_clean_claims_trigrams <- inner_join(full_clean_claims_tri, all_preds_bi)
+
+mclass_labels <- claims_clean %>% select(.id, mclass)
+
+full_clean_claims_trigrams <- inner_join(full_clean_claims_trigrams, mclass_labels)
+
+save(full_clean_claims_trigrams, file = here::here("data/full_clean_claims_trigrams.rda"))
 ```
 
+## Binary Modeling Pipeline
 
 ```{r}
+set.seed(1027)
+tri_partitions <- full_clean_claims_trigrams %>% initial_split(prop = 0.8, strata = bclass)
+
+tri_claim_train <- training(tri_partitions)
+tri_claim_test <- testing(tri_partitions)
+
+
 set.seed(3435)
 
-cbow_model <- word2vec(x = claims_clean$text_clean, type = "cbow", 
-                      hs = FALSE, dim = 50, iter = 10,
-                      sample = 0.3)
+tri_bc_folds <- vfold_cv(tri_claim_train, v=5, strata = bclass)
 
-# getting the list of possible words from our corpus from earlier
-word_list <- colnames(dtm_matrix)
+tri_claim_recipe <- recipe(bclass ~ ., data = tri_claim_train) |> 
+  step_rm(.id) |> 
+  step_rm(mclass) %>% 
+  step_nzv(all_predictors()) |>
+  step_pca(all_numeric_predictors(), -log_odds_pred, -log_odds_pred_bi, num_comp = 100) %>% 
+  step_normalize(all_numeric_predictors())
 
-cbow_embedding <- as.matrix(cbow_model)
-cbow_embedding <- predict(cbow_model, word_list, type = "embedding")
-cbow_embedding <- na.omit(cbow_embedding)
+svm_spec <- svm_linear(cost = tune()) %>% 
+    set_mode("classification") %>% 
+    set_engine("kernlab")
 
-tokenizer_train <- text_tokenizer() %>% fit_text_tokenizer(claims_clean$text_clean)
+tri_svm_linear_wkflow <- workflow() %>% 
+    add_recipe(claim_recipe) %>% 
+    add_model(svm_spec)
 
-sequences_train <- texts_to_sequences(tokenizer_train, claims_clean$text_clean)
 
-max_length <- 150
-
-input_text <- pad_sequences(sequences_train, maxlen = max_length)
+svm_grid <- grid_regular(cost(), levels = 5)
 ```
 
 ```{r}
-word2vecdim <- 32
-
-num_tokens <- length(unique(tokenizer_train$word_index))
-
-model_word2vec <- keras_model_sequential() %>% 
-  # Specify the maximum input length (150) and input_dim (unique tokens+1) and choose 32 dimensions
-  layer_embedding(input_dim = num_tokens+1, 
-                  output_dim = word2vecdim, 
-                  input_length = max_length,
-                  mask_zero = TRUE,   
-                  weights = list(cbow_embedding), # add weights from our previously trained embedding model
-                  trainable = FALSE
-                 ) %>% 
-  layer_flatten() %>% 
-  layer_dense(units = 40, activation = "relu", kernel_initializer = "he_normal", bias_initializer = "zeros", kernel_regularizer = regularizer_l2(0.05)) %>% layer_dropout(rate = 0.2) %>%
-  layer_dense(units = 20, activation = "relu", kernel_regularizer = regularizer_l2(0.01)) %>%
-  layer_dense(units = 1, activation = "sigmoid") 
+tri_svm_linear_res <- tune_grid(tri_svm_linear_wkflow, 
+                         resamples = tri_bc_folds, 
+                         grid = svm_grid, 
+                         control=control_grid(verbose=TRUE))
+save(tri_svm_linear_res, file = here::here("results/tri_svm_linear_res.rda"))
 ```
 
