@@ -1,37 +1,41 @@
 ---
 title: "Predictive modeling of claims status"
-author: 'YOUR NAMES HERE'
+author: 'Joshua Charfauros, Jade OBrien, Caitlyn Vasquez, Shirley Wang'
 date: today
 ---
 
 ### Abstract
 
-Provide a 3-5 sentence summary of your work on the primary task. Indicate what input data was used, what method was used for binary class predictions, what method was used for multiclass predictions, and what estimated accuracies were achieved.
-
-> *Header and paragraph content was scraped from the raw webpages and processed into term frequencies of word tokens. For binary classification, a two-layer neural network yielded an estimated 81.4% accuracy; for multiclass classification, a support vector machine gave 78% accuracy.*
+Our primary task was to develop a binary classification model to predict whether or not a webpage has useful information on it, and also a multi-class prediction model to predict the sort of information that would be present on a webpage. Header and paragraph content was scraped from the raw webpages and processed into term frequencies of word tokens. For binary classification, an elastic net regularized logistic regression yielded an accuracy of ~81%, and for our multiclass classification, a multinomial logistic regression gave ~80% accuracy.
 
 ### Preprocessing
 
-In one paragraph lay out your preprocessing pipeline. No need to provide exact step-by-step detail; just give an overview of the main components:
+ For our data preprocessing, we parse our data using the parse_data() function which cleans our data frame and produces a new column text_clean of just our clean text. parse_data() uses the parse_fn() function that processes our raw HTML and converts it to clean text. We edited the provided version of parse_fn() to also include the header elements. parse_fn() also does a series of string cleaning processes to output clean usable text. Lastly, we tokenize using the nlp_fn() function to split the cleaned text into individual word tokens. We also remove stopwords like “the” or “and” etcetera, since these words are much too common in English and are not useful for modeling. The last notable part of our preprocessing is computing a tf-idf for each token that highlights words which are important in specific documents but not necessarily across the whole data set. This tf-idf is helpful to identify keywords that may indicate a certain class or another.
 
--   what text content was extracted from HTML
-
--   how text was cleaned
-
--   how cleaned text was represented quantitatively
 
 ### Methods
 
-Describe your final predictive models. Include one paragraph with details on the binary classification approach, and one on the multiclass approach. Include for each:
 
--   what ML/statistical method was used
 
--   model specification and hyperparameter selection
+For the binary classification model we used an elastic net with regularized logistic regression. Our predictors for this model were predicted log odds for each HTML document as well as bigram tf-idfs. For our hyperparameters we used 10 grid levels with penalty and mixture ranging from 0-.5. For training, we used 5-fold cross validation.
 
--   training method
+For the multiclass model, we first ran a multinomial regression on our word token data, extracted the resulting predicted probabilities for each class, and then fed these in as predictors into another regularized logistic regression model. The other predictors of this logistic regression model were bigram tf-idfs. For our hyperparameters we used 10 grid levels with penalty and mixture ranging from 0-.5. We also used 5-fold cross-validation for our training method.
 
 ### Results
 
 Indicate the predictive accuracy of the binary classifications and the multiclass classifications. Provide a table for each, and report sensitivity, specificity, and accuracy.[^1]
+```{r}
+binary <- c(accuracy = .810, sensitivity = .695, specificity = .910)
+multi <- c(accuracy = .800, sensitivity = .665, specificity = .936)
+
+table <- data.frame(
+  Metric = c("Accuracy", "Specificity", "Sensitivity"),
+  Binary = c(binary["accuracy"], binary["specificity"],binary["sensitivity"]),
+  Multiclass = c(multi["accuracy"], multi["specificity"], multi["sensitivity"])
+)
+
+rownames(table) <- NULL
+print(table)
+```
 
 [^1]: Read [this article](https://yardstick.tidymodels.org/articles/multiclass.html) on multiclass averaging.
