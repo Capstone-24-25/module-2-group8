@@ -11,6 +11,7 @@
   - Specificity: 0.776
   - AUC: 0.851
   
+for whatever reason this model is extremely large and github literally won't allow me to upload it, I'm happy to email it if needed.
   
 ## Task 2
   
