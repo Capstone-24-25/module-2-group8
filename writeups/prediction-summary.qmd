@@ -6,7 +6,7 @@ date: today
 
 ### Abstract
 
-Our primary task was to develop a binary classification model to predict whether or not a webpage has useful information on it, and also a multi-class prediction model to predict the sort of information that would be present on a webpage. Header and paragraph content was scraped from the raw webpages and processed into term frequencies of word tokens. For binary classification, an elastic net regularized logistic regression yielded an accuracy of ~81%, and for our multiclass classification, a multinomial logistic regression gave ~80% accuracy.
+Our primary task was to develop a binary classification model to predict whether or not a webpage has useful information on it, and also a multi-class prediction model to predict the sort of information that would be present on a webpage. Header and paragraph content was scraped from the raw webpages and processed into term frequencies of word tokens. For binary classification, an elastic net regularized logistic regression yielded an accuracy of ~81%, and for our multiclass classification, a multinomial logistic regression gave ~80% accuracy. We also experimented with neural networks to and see which modeling technique yields a higher accuracy. However, we found that the accuracy was about the same. For binary classification, a two-layer neural network gave ~82% accuracy; for multi-class classification, a two-layer neural network gave ~80% accuracy. 
 
 ### Preprocessing
 
@@ -21,9 +21,12 @@ For the binary classification model we used an elastic net with regularized logi
 
 For the multiclass model, we first ran a multinomial regression on our word token data, extracted the resulting predicted probabilities for each class, and then fed these in as predictors into another regularized logistic regression model. The other predictors of this logistic regression model were bigram tf-idfs. For our hyperparameters we used 10 grid levels with penalty and mixture ranging from 0-.5. We also used 5-fold cross-validation for our training method.
 
+The other modeling technique we used was a two-layer neural network for both the binary classification and multi-class classification. For the binary classification, there is a single hidden layer with 10 units and one output layer with 1 unit, using sigmoid activation. The model is trained using backpropagation through the layers to adjust weights based on the binary cross-entropy loss. We used “Adam” as the optimizer and binary accuracy as the evaluation metric. The training is done over 20 epochs with a validation split of 0.2. The multi-class model has one hidden layer with 64 units (a larger number of units allows us to capture more complex patterns) and one output layer with 5 units, corresponding to the 5 classes, with softmax activation.  Like the binary model, the multi-class model is trained using backpropagation with the Adam optimizer. The sparse categorical cross-entropy is used as the loss function. A validation split of 0.2 is used to evaluate the model’s performance during training and the model is trained for 8 epochs. 
+
 ### Results
 
-Indicate the predictive accuracy of the binary classifications and the multiclass classifications. Provide a table for each, and report sensitivity, specificity, and accuracy.[^1]
+Predictive accuracy for binary model (elastic net regularized logistic regression) and multi-class model (multinomial logistic regression):
+
 ```{r}
 binary <- c(accuracy = .810, sensitivity = .695, specificity = .910)
 multi <- c(accuracy = .800, sensitivity = .665, specificity = .936)
@@ -38,4 +41,8 @@ rownames(table) <- NULL
 print(table)
 ```
 
-[^1]: Read [this article](https://yardstick.tidymodels.org/articles/multiclass.html) on multiclass averaging.
+#### Neural network
+
+- Accuracy for binary model: ~82%
+
+- Accuracy for multi-class model: ~80%

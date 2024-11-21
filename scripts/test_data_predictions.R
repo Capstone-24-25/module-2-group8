@@ -71,3 +71,20 @@ multiclass_bigram_preds <- multiclass_bigram_preds %>%
   select(.id, multi_pred_class, contains(".pred"), - .pred_class)
 
 save(multiclass_bigram_preds, file = here::here("results/preds-group-multiclass.RData"))
+
+
+# Neural network model
+
+load("data/claims_test_clean_tokens_predictor.RData")
+
+# binary model
+readRDS("results/binary_model.rds")
+binary_prediction <- predict(binary_model, claims_test_clean_tokens_predictor)
+
+# multi-class model
+readRDS("results/multi_model.rds")
+multi_prediction <- predict(multi_model, claims_test_clean_tokens_predictor)
+
+
+
+

@@ -22,6 +22,7 @@ library(keras3)
 
 ```{r}
 load("~/pstat 197a/module-2-group8/data/claims-raw.RData")
+load("~/pstat 197a/module-2-group8/data/claims-test.RData")
 ```
 
 ```{r}
@@ -134,6 +135,8 @@ y_train <- train_dtm %>%
   factor() %>%
   as.numeric() - 1
 
+binary_levels <- levels((train_dtm) %>% pull(bclass) %>% factor())
+
 # single layer network
 # store full DTM as a matrix
 x_test <- test_dtm %>%
@@ -149,12 +152,12 @@ y_test <- test_dtm %>%
 
 ```{r}
 # redefine model
-model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
+binary_model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
   layer_dense(10) %>%
   layer_dense(1) %>%
   layer_activation(activation = 'sigmoid')
 
-model %>%
+binary_model %>%
   compile(
     loss = 'binary_crossentropy',
     optimizer = 'adam',
@@ -162,7 +165,7 @@ model %>%
   )
 
 # train with validation split
-history <- model %>%
+history <- binary_model %>%
   fit(x = x_train,
       y = y_train,
       epochs = 20,
@@ -175,7 +178,11 @@ plot(history)
 ```
 
 ```{r}
-evaluate(model, x_test, y_test)
+evaluate(binary_model, x_test, y_test)
+```
+
+```{r}
+#model(claims_test) %>% head() # fix this and fix set.seed()
 ```
 
 # multi-class setting
@@ -218,6 +225,8 @@ y_train <- train_dtm %>%
   factor() %>%
   as.numeric() - 1
 
+multi_levels <- levels((train_dtm) %>% pull(mclass) %>% factor())
+
 # single layer network
 # store full DTM as a matrix
 x_test <- test_dtm %>%
@@ -233,12 +242,12 @@ y_test <- test_dtm %>%
 
 ```{r}
 # redefine model
-model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
+multi_model <- keras_model_sequential(input_shape = ncol(x_train)) %>%
   layer_dense(64) %>% # more is better
   layer_dense(5) %>% # 5 classes
   layer_activation(activation = 'softmax') # for 5 probabilites
 
-model %>%
+multi_model %>%
   compile(
     loss = 'sparse_categorical_crossentropy',
     optimizer = 'adam',
@@ -248,7 +257,7 @@ model %>%
 # sparse_categorical_crossentropy is for multi-model
 
 # train with validation split
-history <- model %>%
+history <- multi_model %>%
   fit(x = x_train,
       y = y_train,
       epochs = 8,
@@ -260,10 +269,93 @@ plot(history)
 ```
 
 ```{r}
-evaluate(model, x_test, y_test)
+evaluate(multi_model, x_test, y_test)
 ```
 
+```{r}
+head(claims_test)
 
+# function to parse html and clean text (with headers)
+# parse_fn <- function(.html){
+#   read_html(.html) %>%
+#     html_elements('p, h1, h2, h3, h4, h5, h6') %>%
+#     html_text2() %>%
+#     str_c(collapse = ' ') %>%
+#     rm_url() %>%
+#     rm_email() %>%
+#     str_remove_all('\'') %>%
+#     str_replace_all(paste(c('\n', 
+#                             '[[:punct:]]', 
+#                             'nbsp', 
+#                             '[[:digit:]]', 
+#                             '[[:symbol:]]'),
+#                           collapse = '|'), ' ') %>%
+#     str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+#     tolower() %>%
+#     str_replace_all("\\s+", " ")
+# }
+
+
+nlp_fn_multi <- function(parse_data.out){
+  out <- parse_data.out %>% 
+    unnest_tokens(output = token, 
+                  input = text_clean, 
+                  token = 'words',
+                  stopwords = str_remove_all(stop_words$word, 
+                                             '[[:punct:]]')) %>%
+    mutate(token.lem = lemmatize_words(token)) %>%
+    filter(str_length(token.lem) > 2) %>%
+    count(.id, token.lem, name = 'n') %>%
+    bind_tf_idf(term = token.lem, 
+                document = .id,
+                n = n) %>%
+    pivot_wider(id_cols = c(.id),
+                names_from = 'token.lem',
+                values_from = 'tf_idf',
+                values_fill = 0)
+  return(out)
+}
+
+
+#clean test data set
+claims_test_clean <- parse_data(claims_test)
+claims_test_clean_tokens <- nlp_fn_multi(claims_test_clean)
+```
+
+```{r}
+claims_test_clean_tokens <- claims_test_clean_tokens %>%
+  bind_cols(as.data.frame(matrix(0, nrow = nrow(claims_test_clean_tokens),
+                                 ncol = length(setdiff(names(train_dtm), names(claims_test_clean_tokens))),
+                                 dimnames = list(NULL, setdiff(names(train_dtm), names(claims_test_clean_tokens)))))) %>%
+              select(all_of(names(train_dtm))) %>%
+              select(-mclass)
+```
+
+```{r}
+claims_test_clean_tokens_id <- claims_test_clean_tokens %>% select(.id)
+claims_test_clean_tokens_predictor <- claims_test_clean_tokens %>% select(-.id) %>% as.matrix()
+
+binary_prediction <- binary_model %>% predict(claims_test_clean_tokens_predictor)
+multi_prediction <- multi_model %>% predict(claims_test_clean_tokens_predictor)
+
+pred_df <- claims_test_clean_tokens_id %>%
+  mutate(bclass.pred = binary_prediction) %>%
+  mutate(bclass.pred = ifelse(bclass.pred > 0.5, 2, 1)) %>%
+  mutate(bclass.pred = binary_levels[bclass.pred]) %>%
+  cbind(data.frame(multi_prediction)) %>%
+  rowwise() %>%
+  mutate(mclass.pred = which.max(c_across(X1:X5))) %>%
+  ungroup() %>%
+  select(.id, bclass.pred, mclass.pred) %>%
+  mutate(mclass.pred = multi_levels[mclass.pred])
+```
+
+```{r, eval = F}
+save(pred_df, file = "../results/preds-group8.RData")
+saveRDS(binary_model, file = "../results/binary_model.rds")
+saveRDS(multi_model, file = "../results/multi_model.rds")
+save(claims_test_clean_tokens_predictor, file = "../data/claims_test_clean_tokens_predictor.RData")
+```
 
 
 
